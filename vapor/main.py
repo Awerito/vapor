@@ -162,6 +162,7 @@ class SteamApp(App[None]):
 					value=self.config.get_value('steam-api-key'),
 					placeholder='Steam API Key',
 					id='api-key',
+					password=True,
 					validators=Regex(r'[A-Z0-9]{32}'),
 				),
 				Input(
