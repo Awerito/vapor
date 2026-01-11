@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Center, Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
+from textual.coordinate import Coordinate
 from textual.types import CSSPathType
 from textual.validation import Regex
 from textual.widgets import (
@@ -38,6 +39,7 @@ from vapor.data_structures import (
 	RATING_DICT,
 	AntiCheatData,
 	AntiCheatStatus,
+	Game,
 )
 from vapor.exceptions import InvalidIDError, PrivateAccountError, UnauthorizedError
 
@@ -213,28 +215,52 @@ class SteamApp(App[None]):
 			# fetch anti-cheat data
 			cache = await get_anti_cheat_data()
 
-			# Fetch user data
-			user_data = await get_steam_user_data(api_key.value, user_id.value)
+			# Clear table before loading
 			table.clear()
+			table.set_loading(loading=False)
 
-			# Add games and ratings to the DataTable
-			for game in user_data.game_ratings:
-				if cache:
-					game_ac = cache.get_anticheat_data(game.app_id)
-					if not game_ac:
+			# Track row indices for updating cells later
+			row_indices: dict[str, int] = {}
+
+			# Callback to add all games to table initially (with pending ratings)
+			async def on_games_loaded(games: list[Game]) -> None:
+				for idx, game in enumerate(games):
+					if cache:
+						game_ac = cache.get_anticheat_data(game.app_id)
+						if not game_ac:
+							game_ac = AntiCheatData('', AntiCheatStatus.BLANK)
+					else:
 						game_ac = AntiCheatData('', AntiCheatStatus.BLANK)
-				else:
-					game_ac = AntiCheatData('', AntiCheatStatus.BLANK)
 
-				table.add_row(
-					game.name,
-					Text(
-						game.rating.capitalize(),
-						style=RATING_DICT[game.rating][1],
-						justify='center',
-					),
-					Text(game_ac.status.value, style=game_ac.color, justify='center'),
-				)
+					table.add_row(
+						game.name,
+						Text(
+							game.rating.capitalize(),
+							style=RATING_DICT[game.rating][1],
+							justify='center',
+						),
+						Text(game_ac.status.value, style=game_ac.color, justify='center'),
+					)
+					row_indices[game.app_id] = idx
+
+			# Callback to update a game's rating when it loads
+			async def on_game_updated(game: Game) -> None:
+				if game.app_id in row_indices:
+					row_idx = row_indices[game.app_id]
+					coordinate = Coordinate(row_idx, 1)  # Column 1 is Compatibility
+					table.update_cell_at(
+						coordinate,
+						Text(
+							game.rating.capitalize(),
+							style=RATING_DICT[game.rating][1],
+							justify='center',
+						),
+					)
+
+			# Fetch user data with progressive loading
+			user_data = await get_steam_user_data(
+				api_key.value, user_id.value, on_games_loaded, on_game_updated
+			)
 
 			# Add the user's average rating to the screen
 			rating_label: Label = cast(Label, self.query_one('#user-rating'))

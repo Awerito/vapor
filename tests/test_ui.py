@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from unittest.mock import Mock, patch
 
 import pytest
@@ -31,6 +32,23 @@ STEAM_USER_DATA = SteamUserData(
 	],
 	user_average='gold',
 )
+
+
+async def mock_get_steam_user_data(
+	_api_key: str,
+	_user_id: str,
+	on_games_loaded: Callable[[list[Game]], Awaitable[None]] | None = None,
+	on_game_updated: Callable[[Game], Awaitable[None]] | None = None,
+) -> SteamUserData:
+	"""Mock get_steam_user_data that calls the callbacks."""
+	if on_games_loaded:
+		await on_games_loaded(STEAM_USER_DATA.game_ratings)
+	if on_game_updated:
+		for game in STEAM_USER_DATA.game_ratings:
+			await on_game_updated(game)
+	return STEAM_USER_DATA
+
+
 STEAM_ID_URL = 'https://steamcommunity.com/id/tabulatejarl8/'
 STEAM_PROFILE_URL = 'https://steamcommunity.com/profiles/76561198872425795'
 
@@ -130,7 +148,7 @@ async def test_table_population_username(config: Config) -> None:
 		patch('vapor.main.get_anti_cheat_data', return_value=MockCache()),
 		patch(
 			'vapor.main.get_steam_user_data',
-			return_value=STEAM_USER_DATA,
+			side_effect=mock_get_steam_user_data,
 		),
 	):
 		app = SteamApp(config)
@@ -172,7 +190,7 @@ async def test_parse_steam_url_id(config: Config) -> None:
 		patch('vapor.main.get_anti_cheat_data', return_value=MockCache()),
 		patch(
 			'vapor.main.get_steam_user_data',
-			return_value=STEAM_USER_DATA,
+			side_effect=mock_get_steam_user_data,
 		),
 	):
 		app = SteamApp(config)
@@ -196,7 +214,7 @@ async def test_parse_steam_url_profiles(config: Config) -> None:
 		patch('vapor.main.get_anti_cheat_data', return_value=MockCache()),
 		patch(
 			'vapor.main.get_steam_user_data',
-			return_value=STEAM_USER_DATA,
+			side_effect=mock_get_steam_user_data,
 		),
 	):
 		app = SteamApp(config)
@@ -221,7 +239,7 @@ async def test_no_cache_user_query(config: Config) -> None:
 		patch('vapor.main.get_anti_cheat_data', return_value=None),
 		patch(
 			'vapor.main.get_steam_user_data',
-			return_value=STEAM_USER_DATA,
+			side_effect=mock_get_steam_user_data,
 		),
 	):
 		app = SteamApp(config)
@@ -241,7 +259,7 @@ async def test_user_id_preservation(config: Config) -> None:
 		patch('vapor.main.get_anti_cheat_data', return_value=None),
 		patch(
 			'vapor.main.get_steam_user_data',
-			return_value=STEAM_USER_DATA,
+			side_effect=mock_get_steam_user_data,
 		),
 	):
 		app = SteamApp(config)

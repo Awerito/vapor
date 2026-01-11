@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from typing import cast
 
 import aiohttp
+
+MAX_CONCURRENT_REQUESTS = 20
+"""Limit concurrent requests to avoid rate limiting."""
 
 from vapor.cache_handler import Cache
 from vapor.data_structures import (
@@ -29,30 +34,44 @@ from vapor.data_structures import (
 from vapor.exceptions import InvalidIDError, PrivateAccountError, UnauthorizedError
 
 
-async def async_get(url: str) -> Response:
+async def async_get(
+	url: str,
+	session: aiohttp.ClientSession | None = None,
+) -> Response:
 	"""Async get request for fetching web content.
 
 	Args:
 		url (str): The URL to fetch data from.
+		session (aiohttp.ClientSession | None): Optional session to reuse.
+			If None, creates a new session. Defaults to None.
 
 	Returns:
 		Response: A Response object containing the body and status code.
 	"""
-	async with aiohttp.ClientSession() as session, session.get(url) as response:
-		return Response(data=await response.text(), status=response.status)
+	if session is None:
+		async with aiohttp.ClientSession() as session, session.get(url) as response:
+			return Response(data=await response.text(), status=response.status)
+	else:
+		async with session.get(url) as response:
+			return Response(data=await response.text(), status=response.status)
 
 
-async def check_game_is_native(app_id: str) -> bool:
+async def check_game_is_native(
+	app_id: str,
+	session: aiohttp.ClientSession | None = None,
+) -> bool:
 	"""Check if a given Steam game has native Linux support.
 
 	Args:
 		app_id (int): The App ID of the game.
+		session (aiohttp.ClientSession | None): Optional session to reuse.
 
 	Returns:
 		bool: Whether or not the game has native Linux support.
 	"""
 	data = await async_get(
 		f'https://store.steampowered.com/api/appdetails?appids={app_id}&filters=platforms',
+		session,
 	)
 	if data.status != HTTP_SUCCESS:
 		return False
@@ -109,12 +128,17 @@ async def get_anti_cheat_data() -> Cache | None:
 	return cache
 
 
-async def get_game_average_rating(app_id: str, cache: Cache) -> str:
+async def get_game_average_rating(
+	app_id: str,
+	cache: Cache,
+	session: aiohttp.ClientSession | None = None,
+) -> str:
 	"""Get the average game rating from ProtonDB.
 
 	Args:
 		app_id (str): The game ID.
 		cache (Cache): The game cache.
+		session (aiohttp.ClientSession | None): Optional session to reuse.
 
 	Returns:
 		str: A text rating from ProtonDB. gold, bronze, silver, etc.
@@ -124,11 +148,12 @@ async def get_game_average_rating(app_id: str, cache: Cache) -> str:
 		if game is not None:
 			return game.rating
 
-	if await check_game_is_native(app_id):
+	if await check_game_is_native(app_id, session):
 		return 'native'
 
 	data = await async_get(
 		f'https://www.protondb.com/api/v1/reports/summaries/{app_id}.json',
+		session,
 	)
 	if data.status != HTTP_SUCCESS:
 		return 'pending'
@@ -166,12 +191,21 @@ async def resolve_vanity_name(api_key: str, name: str) -> str:
 	return user_data['response']['steamid']
 
 
-async def get_steam_user_data(api_key: str, user_id: str) -> SteamUserData:
+async def get_steam_user_data(
+	api_key: str,
+	user_id: str,
+	on_games_loaded: Callable[[list[Game]], Awaitable[None]] | None = None,
+	on_game_updated: Callable[[Game], Awaitable[None]] | None = None,
+) -> SteamUserData:
 	"""Fetch a steam user's games and get their ratings from ProtonDB.
 
 	Args:
 		api_key (str): Steam API key.
 		user_id (str): The user's Steam ID or vanity name.
+		on_games_loaded (Callable[[list[Game]], Awaitable[None]] | None): Optional
+			callback that receives all games initially (with pending ratings).
+		on_game_updated (Callable[[Game], Awaitable[None]] | None): Optional
+			callback that receives individual games as their ratings load.
 
 	Raises:
 		InvalidIDError: If an invalid Steam ID is provided.
@@ -201,18 +235,56 @@ async def get_steam_user_data(api_key: str, user_id: str) -> SteamUserData:
 
 	user_data = cast(SteamAPIUserDataResponse, json.loads(data.data))
 
-	return await _parse_steam_user_games(user_data, cache)
+	return await _parse_steam_user_games(
+		user_data, cache, on_games_loaded, on_game_updated
+	)
+
+
+async def _fetch_single_game_rating(
+	game: dict,
+	cache: Cache,
+	semaphore: asyncio.Semaphore,
+	session: aiohttp.ClientSession,
+) -> Game:
+	"""Fetch rating for a single game with concurrency control.
+
+	Args:
+		game (dict): Game data from Steam API.
+		cache (Cache): The game cache.
+		semaphore (asyncio.Semaphore): Semaphore to limit concurrent requests.
+		session (aiohttp.ClientSession): Shared session to reuse.
+
+	Returns:
+		Game: The game with its ProtonDB rating.
+	"""
+	async with semaphore:
+		try:
+			rating = await get_game_average_rating(str(game['appid']), cache, session)
+		except Exception:
+			rating = 'pending'
+		return Game(
+			name=game['name'],
+			rating=rating,
+			playtime=game['playtime_forever'],
+			app_id=str(game['appid']),
+		)
 
 
 async def _parse_steam_user_games(
 	data: SteamAPIUserDataResponse,
 	cache: Cache,
+	on_games_loaded: Callable[[list[Game]], Awaitable[None]] | None = None,
+	on_game_updated: Callable[[Game], Awaitable[None]] | None = None,
 ) -> SteamUserData:
 	"""Parse user data from the Steam API and return information on their games.
 
 	Args:
 		data (SteamAPIUserDataResponse): user data from the Steam API
 		cache (Cache): the loaded Cache file
+		on_games_loaded (Callable[[list[Game]], Awaitable[None]] | None): Optional
+			callback that receives all games initially with pending ratings.
+		on_game_updated (Callable[[Game], Awaitable[None]] | None): Optional
+			callback that receives individual games as their ratings load.
 
 	Returns:
 		SteamUserData: the user's Steam games and ProtonDB ratings
@@ -227,14 +299,51 @@ async def _parse_steam_user_games(
 		raise PrivateAccountError
 
 	games = game_data['games']
-	game_ratings = [
+
+	# First, create all games with 'pending' rating and notify UI
+	game_ratings: list[Game] = [
 		Game(
 			name=game['name'],
-			rating=await get_game_average_rating(str(game['appid']), cache),
+			rating='pending',
 			playtime=game['playtime_forever'],
 			app_id=str(game['appid']),
 		)
 		for game in games
+	]
+
+	# Sort by playtime descending before showing
+	game_ratings.sort(key=lambda x: x.playtime, reverse=True)
+
+	# Show all games immediately with 'pending' rating
+	if on_games_loaded:
+		await on_games_loaded(game_ratings)
+
+	# Now fetch actual ratings concurrently, streaming updates as they complete
+	semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+	ratings_map: dict[str, str] = {}
+
+	async with aiohttp.ClientSession() as session:
+		tasks = [
+			_fetch_single_game_rating(game, cache, semaphore, session)
+			for game in games
+		]
+
+		# Stream results as they complete
+		for coro in asyncio.as_completed(tasks):
+			fetched_game = await coro
+			ratings_map[fetched_game.app_id] = fetched_game.rating
+			if on_game_updated:
+				await on_game_updated(fetched_game)
+
+	# Build final sorted list with all ratings
+	game_ratings = [
+		Game(
+			name=g.name,
+			rating=ratings_map.get(g.app_id, 'pending'),
+			playtime=g.playtime,
+			app_id=g.app_id,
+		)
+		for g in game_ratings
 	]
 
 	game_ratings.sort(key=lambda x: x.playtime)
