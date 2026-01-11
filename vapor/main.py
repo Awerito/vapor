@@ -198,6 +198,17 @@ class SteamApp(App[None]):
 
 		self.install_screen(SettingsScreen(self.config), name='settings')  # pyright: ignore[reportUnknownMemberType]
 
+		# Load saved theme
+		saved_theme = self.config.get_value('theme')
+		if saved_theme:
+			self.theme = saved_theme
+
+	def watch_theme(self, theme: str) -> None:
+		"""Save theme to config when it changes."""
+		if self.config._config_data is not None:
+			self.config.set_value('theme', theme)
+			self.config.write_config()
+
 	def on_data_table_header_selected(
 		self, event: DataTable.HeaderSelected
 	) -> None:
