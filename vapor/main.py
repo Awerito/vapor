@@ -116,6 +116,28 @@ class SteamApp(App[None]):
 		Binding('ctrl+s', "push_screen('settings')", 'Settings', show=True),
 	]
 
+	# Rating weights for sorting (higher = better)
+	RATING_WEIGHTS: ClassVar[dict[str, int]] = {
+		'native': 7,
+		'platinum': 6,
+		'gold': 5,
+		'silver': 4,
+		'bronze': 3,
+		'pending': 2,
+		'borked': 1,
+		'loading': 0,
+	}
+
+	# Anti-cheat weights for sorting (higher = better)
+	ANTICHEAT_WEIGHTS: ClassVar[dict[str, int]] = {
+		'supported': 5,
+		'running': 4,
+		'planned': 3,
+		'broken': 2,
+		'denied': 1,
+		'': 0,
+	}
+
 	def __init__(self, custom_config: Config | None = None) -> None:
 		"""Construct the application.
 
@@ -126,6 +148,8 @@ class SteamApp(App[None]):
 
 		self.config: Config = custom_config.read_config()
 		self.show_account_help_dialog: bool = False
+		self._sort_column: str | None = None
+		self._sort_reverse: bool = False
 		super().__init__()
 
 	@override
@@ -172,6 +196,41 @@ class SteamApp(App[None]):
 			table.add_row('', '')
 
 		self.install_screen(SettingsScreen(self.config), name='settings')  # pyright: ignore[reportUnknownMemberType]
+
+	def on_data_table_header_selected(
+		self, event: DataTable.HeaderSelected
+	) -> None:
+		"""Handle column header click for sorting."""
+		table = event.data_table
+		column_label = event.label.plain
+
+		# Toggle sort direction if same column, otherwise sort ascending
+		if self._sort_column == column_label:
+			self._sort_reverse = not self._sort_reverse
+		else:
+			self._sort_column = column_label
+			self._sort_reverse = False
+
+		# Define sort key based on column
+		def sort_key(row: tuple) -> tuple:
+			title, compat, anticheat = row
+			# Extract text from Text objects
+			title_str = str(title.plain if hasattr(title, 'plain') else title)
+			compat_str = str(
+				compat.plain if hasattr(compat, 'plain') else compat
+			).lower()
+			anticheat_str = str(
+				anticheat.plain if hasattr(anticheat, 'plain') else anticheat
+			).lower()
+
+			if column_label == 'Title':
+				return (title_str.lower(),)
+			elif column_label == 'Compatibility':
+				return (self.RATING_WEIGHTS.get(compat_str, 0),)
+			else:  # Anti-Cheat Compatibility
+				return (self.ANTICHEAT_WEIGHTS.get(anticheat_str, 0),)
+
+		table.sort(key=sort_key, reverse=self._sort_reverse)
 
 	@work(exclusive=True)
 	@on(Button.Pressed, '#submit-button')

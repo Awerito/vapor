@@ -117,6 +117,7 @@ RATING_DICT: dict[str, ProtonDBRating] = {
 	'gold': ProtonDBRating(weight=4, color='#CFB53B'),
 	'platinum': ProtonDBRating(weight=5, color='#B4C7DC'),
 	'native': ProtonDBRating(weight=6, color='#02b302'),
+	'loading': ProtonDBRating(weight=-1, color='dim'),
 }
 
 

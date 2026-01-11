@@ -300,11 +300,11 @@ async def _parse_steam_user_games(
 
 	games = game_data['games']
 
-	# First, create all games with 'pending' rating and notify UI
+	# First, create all games with 'loading' rating and notify UI
 	game_ratings: list[Game] = [
 		Game(
 			name=game['name'],
-			rating='pending',
+			rating='loading',
 			playtime=game['playtime_forever'],
 			app_id=str(game['appid']),
 		)
